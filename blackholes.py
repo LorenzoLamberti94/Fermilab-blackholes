@@ -288,7 +288,10 @@ def get_options():
 
     return opts
 
+
 def main():
+    import sys
+
     opts = get_options()
 
     if opts['test']:
@@ -307,9 +310,10 @@ def main():
         end = datetime.datetime.utcnow()
     else:
         try:
-            end = datetime.datetime.fromiso(opts['end'])
+            end = datetime.datetime.fromisoformat(opts['end'])
         except Exception as e:
-            log.fatal(f'error while parsing end time, should conform to ISO8601: {e}')
+            logger.error(f'error while parsing end time, should conform to ISO8601: {e}')
+            sys.exit(1)
 
     print('\n\n ############################################################# BLACKHOLE NODES #############################################################')
     print_suspicious(b.get_blackholes(end), opts['threshold'])
