@@ -18,14 +18,14 @@ opts = {
         'disconnections': 5,
         'fail': 0.1,
         'hold_manual': 0,
-        'hold_resources': 5,
-        'hold_starter': 100,
-        'hold_other': 5,
-        'no_successful_jobs': 5,
+        'hold_resources': 10,
+        'hold_starter': 500,
+        'hold_other': 10,
+        'no_successful_jobs': 2,
     },
     'window_m': 30,
     'scale': 0.5,
-    'threshold': 1,
+    'threshold': 25,
 }
 
 es = Elasticsearch(opts['elasticsearch_url'], timeout=opts['elasticsearch_timeout_s'])
