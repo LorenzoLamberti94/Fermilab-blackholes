@@ -12,49 +12,71 @@ logger = logging.getLogger(__name__)
 
 class Blackholes(object):
     def __init__(self, client, weights={}, window=30, scale=0.5):
+        '''
+        :param client   : elasticsearch_url
+        :param weights  : dictionary that contains the weights used for the weighted average of the scores
+        :param window   : it's the interval of time that it's analyzed (in minutes)
+        :param scale    : the "score" parameter sets the interval of time on which we calculate the average of the features. average_time = analysis_time / scale
+            example     : if we set a scale of 0.25, the average time will be four times longer than the analysis time
+        '''
+
         self.client = client
         self.weights=weights
         self.window=window
         self.scale=scale
 
-    def get_blackholes(self, end, term_to_search="MachineAttrMachine0", query=None):
-        """
-        it returns a list with (node,score) and add the scores to the suspicious_nodes_dictionary
-        """
-        self.start_time_analysis = end - datetime.timedelta(minutes=self.window)
-        self.end_time_analysis = end
-
-        # TIME FOR AVERAGE
-        self.end_time_average = self.start_time_analysis
-        self.start_time_average = self.end_time_average - datetime.timedelta(minutes=self.window / self.scale)
-        analysis_dictionary, average_dictionary, global_average = self.get_elasticsearch_data(term_to_search, query)
-
-        # Get suspicious nodes
-        suspicious_nodes_dictionary = self.save_suspicious_nodes_global_average(analysis_dictionary, global_average)
-
-        # Calculate Scores and Sort the List
-        suspicious_nodes_dictionary = self.calculate_score_suspicious_nodes(suspicious_nodes_dictionary,global_average)
-
-        return suspicious_nodes_dictionary
-
     def get_elasticsearch_data(self, term_to_search, query):
+        """
+        This function creates the "global average" and two dictionaries:
+        - The "analysis_dictionary" collects the data for the analysis
+        - The "average_dictionary" collects the data in order to create a reference point
 
-        # 1: analysis_dictionary is the dictionary of nodes under analysis
+        the average_dictionary needs to be normalized because it takes in account a time interval much bigger compared to the analysis time (look at the "scale" variable)
+
+        :param term_to_search   : The data will be aggregated according to this term. Type "MachineAttrMachine0" to aggregate by nodes, type "MachineAttrGLIDEIN_Site0" to aggregate by Sites
+        :param query            : you can pass here a specific query, for example with "MachineAttrMachine0: fnpc17146.fnal.gov" you will get only informations about that specific node
+
+        :var analysis_dictionary : is the dictionary of nodes under analysis. it takes the time interval between (start_time_analysis ; end_time_analysis)
+        :var average_dictionary  : is the dictionary of average features of each node. it takes the time interval between (start_time_average ; end_time_average)
+        :var global_average      : is a dictionary in which we save the average value for every feature. every average value considers the data from all the nodes
+
+        :return             : the function returns these three dictionaries: analysis_dictionary,average_dictionary, global_average
+
+        """
+
+        # Creation of analysis and average dictionaries
         analysis_dictionary = self.get_fifebatch_events(self.start_time_analysis, self.end_time_analysis, 'fifebatch-events-*', term_to_search, query=None)
-
-        # 2: average_dictionary is the dictionary of average features of each node in a previous time interval
         average_dictionary = self.get_fifebatch_events(self.start_time_average, self.end_time_average, 'fifebatch-events-*', term_to_search, query=None)
-        # Normalization: multiplies by scaling factor (to compensate the fact that the time window is bigger = much more informations)
+
+        # Normalization
+        ''' Normalization: it is a for loop that it's needed for the normalization of the data inside the average_dictionary. It uses the "scale" value for normalization
+        example:
+        if we set a scale of 0.25, the average time will be four times longer than the analysis time and we need to multiply every value of the average dictionary by the scale factor 0.25 '''
         for node, stats in average_dictionary.items():
-            stats.update((k, v * self.scale) for k, v in
-                         average_dictionary[node].items())  # Scaling factor is for normalization over time
+            stats.update((k, v * self.scale) for k, v in    # Scaling factor is for normalization over time
+                         average_dictionary[node].items())
         # Compute global average of nodes values
         global_average = self.calculate_global_average(average_dictionary)
 
         return analysis_dictionary, average_dictionary, global_average
 
-    def get_fifebatch_events(self,start, end, fife_index, term_to_search, query=None):  ##initialization between brackets
-        numebr_of_nodes_analyzed = 1000
+    def get_fifebatch_events(self,start, end, fife_index, term_to_search, query=None):  #initialization between brackets
+        '''
+        This function makes a query to elasticsearch server
+
+        :param start          : start time for the query to elasticsearch
+        :param end            : end time for the query to elasticsearch
+        :param fife_index     : string that provides the index name in which i'm searching the data
+        :param term_to_search : The data will be aggregated according to this term. Type "MachineAttrMachine0" to aggregate by nodes, type "MachineAttrGLIDEIN_Site0" to aggregate by Sites
+        :param query          : you can pass here a specific query, for example with "MachineAttrMachine0: fnpc17146.fnal.gov" you will get only informations about that specific node
+
+        :var number_of_nodes_analyzed : it's the number of nodes that will be analyzed
+        :var query_events : JSON query to the elasticsearch server
+
+        :return complete : returns a dictionary with the full list of nodes and their features
+        '''
+
+        number_of_nodes_analyzed = 1000
 
 
         query_events = {
@@ -77,7 +99,7 @@ class Blackholes(object):
                 "node": {
                     "terms": {
                         "field": term_to_search,
-                        "size": numebr_of_nodes_analyzed,
+                        "size": number_of_nodes_analyzed,
                         "order": {
                             "_count": "desc"
                         }
@@ -143,20 +165,33 @@ class Blackholes(object):
             }
         }
 
+        # Add the query (only if it's specified) to the JSON format
         if query is not None:
             query_events['query']['bool']['must'] = {'query_string': {'query': query}}
+
+        # Get data from the server
         r = self.client.search(fife_index, body=query_events)
-        #     print (r , '\n\n')
+
+        # then save only the informations needed: count of held, failed, successful jobs and disconnetions
         complete = {}
         for node in r['aggregations']['node']['buckets']:
-            # print vo
             complete[node['key']] = {}
             for status, stats in node['status']['buckets'].items():
                 complete[node['key']][status] = stats['doc_count']
-        # print(complete)
+
         return complete
 
     def calculate_global_average(self,dictionary):
+        '''
+        This function computes the global average.
+        We get a dictionary from the input and then:
+        - we sum up the values of every node for every feature
+        - we divide the sum obtained by the number of the nodes (:var lenght)
+
+        :param dictionary : it's the dictionary over which we calculate the global average
+        :return           : we obtain a dictionary that stores the average of every feature computed considering the values from all the nodes. This variable obtained is useful as a pint of reference for the analysis
+        '''
+
         lenght = len(dictionary)
         complete = {}
         for node, status in dictionary.items():
@@ -169,20 +204,26 @@ class Blackholes(object):
 
         return complete
 
-    def save_suspicious_nodes_global_average(self, analysis, average):
-        """
-        We calculate the average for every single node. use the Global Average just to set a threshold
-        """
+    def create_suspicious_nodes_dictionary(analysis):  # We calculate the average for every single node. use thethreshold just to set a threshold
+        '''
+        This function takes the dictionary "analysis" of the analysis interval of time and creates a new dictionary that includes some new entries:
+        "score" and "no_successful_jobs". it also moves all the features inside the "criteria" entry.
+        We still need to compute the scores, so it is still 0.
+
+        :param analysis: it's the dictionary on which we want to work
+        :return: a dictionary with all the nodes, scores and criteria for the scores. We still need to compute the scores, so it is still 0
+        '''
+
         result ={}
         for node, stats_analysis in analysis.items():
             for aggr, value_analysis in stats_analysis.items():
-                # if (value_analysis > average[aggr]):    # THRESHOLD
                 if node not in result:
                     result[node] = {}
                     result[node]['criteria'] = {}
                     result[node]['criteria']['no_successful_jobs'] = float(0)
                     result[node]['score'] = float(0)
-                if aggr != 'success' and aggr != 'hold':    ################################ EXCLUDES SUCCESS and HOLD aggregation
+
+                if aggr != 'success' and aggr != 'hold':    # EXCLUDES SUCCESS and HOLD aggregation, thay are not useful for now
                     result[node]['criteria'][aggr] = value_analysis
 
             if analysis[node]['success']==0:
@@ -191,39 +232,94 @@ class Blackholes(object):
         return result
 
     def calculate_score_suspicious_nodes(self, suspicious_dict,average):
+        '''
+        This function computes the score for each node.
+        The score is a weighted average and it takes in consideration the average value of the features in a precedent interval of time (global_average)
+
+        score = (count(feature)/global average(feature)) * weight
+        NOTE: we don't take in account global_average when we compute the score for "starter" hold reason and for the number of "no_successful_jobs"
+
+        :param suspicious_dict: this is the initialized dictionary of the suspicious nodes, in wich the scores are still 0
+        :param average: it's the global_average, it's a reference point of a precedent interval of time (longer than the analysis time, look at the "scale" variable)
+        :return: it returns the same dictionary in wich the scores and the reasons of the scores (criteria:features) are updated (features are divided by the global average, the score is computed as a weighted average)
+        '''
+
         for node, stats_analysis in suspicious_dict.items():
             for aggr, value_analysis in stats_analysis['criteria'].items():
 
                 if aggr=='disconnections':
                     # suspicious_dict[node]['criteria'][aggr]=value_analysis/(average[aggr]+1) ############################################################## I INSERTED AN 1 because the average is often Zero
-                    suspicious_dict[node]['score'] += self.weights[aggr] * (suspicious_dict[node]['criteria'][aggr]) # Just INCREMENT the score
+                    suspicious_dict[node]['score'] += self.weights[aggr] * (suspicious_dict[node]['criteria'][aggr]) # Just INCREMENTS the score
 
                 if aggr=='fail':
                     suspicious_dict[node]['criteria'][aggr] = value_analysis / (average[aggr] + 1)
-                    suspicious_dict[node]['score'] += self.weights[aggr] * suspicious_dict[node]['criteria'][aggr]  # Just INCREMENT the score
+                    suspicious_dict[node]['score'] += self.weights[aggr] * suspicious_dict[node]['criteria'][aggr]  # Just INCREMENTS the score
 
                 if aggr == 'hold_manual':
                     suspicious_dict[node]['criteria'][aggr] = value_analysis / (average[aggr] + 1)
-                    suspicious_dict[node]['score'] += self.weights[aggr] * suspicious_dict[node]['criteria'][aggr]  # Just INCREMENT the score
+                    suspicious_dict[node]['score'] += self.weights[aggr] * suspicious_dict[node]['criteria'][aggr]  # Just INCREMENTS the score
 
                 if aggr == 'hold_others':
                     suspicious_dict[node]['criteria'][aggr] = value_analysis / (average[aggr] + 1)
-                    suspicious_dict[node]['score'] += self.weights[aggr] * suspicious_dict[node]['criteria'][aggr]  # Just INCREMENT the score
+                    suspicious_dict[node]['score'] += self.weights[aggr] * suspicious_dict[node]['criteria'][aggr]  # Just INCREMENTS the score
 
                 if aggr == 'hold_resources':
                     suspicious_dict[node]['criteria'][aggr] = value_analysis / (average[aggr] + 1)
-                    suspicious_dict[node]['score'] += self.weights[aggr] * suspicious_dict[node]['criteria'][aggr]  # Just INCREMENT the score
+                    suspicious_dict[node]['score'] += self.weights[aggr] * suspicious_dict[node]['criteria'][aggr]  # Just INCREMENTS the score
 
                 if aggr == 'hold_starter':
-                    # suspicious_dict[node]['criteria'][aggr] = value_analysis / (average[aggr] + 1)
-                    suspicious_dict[node]['score'] += self.weights[aggr] * suspicious_dict[node]['criteria'][aggr]  # Just INCREMENT the score
+                    # suspicious_dict[node]['criteria'][aggr] = value_analysis / (average[aggr] + 1)    # WE DONT TAKE IN CONSIDERATION THE GLOBAL AVERAGE FOR THIS FEATURE
+                    suspicious_dict[node]['score'] += self.weights[aggr] * suspicious_dict[node]['criteria'][aggr]  # Just INCREMENTS the score
 
-                if aggr == 'no_successful_jobs':
-                    suspicious_dict[node]['score'] += self.weights[aggr] * suspicious_dict[node]['criteria'][aggr]  # Just INCREMENT the score
+                if aggr == 'no_successful_jobs':                                                        # WE DONT TAKE IN CONSIDERATION THE GLOBAL AVERAGE FOR THIS FEATURE
+                    suspicious_dict[node]['score'] += self.weights[aggr] * suspicious_dict[node]['criteria'][aggr]  # Just INCREMENTS the score
 
         return suspicious_dict
 
+    def get_blackholes(self, end, term_to_search="MachineAttrMachine0", query=None):
+
+        '''
+        This function sets the interval of time for the analysis and for the average
+        Then it gets data from elasticsearch and creates a dictionary with the suspicious nodes
+        It returns a dictionary of the suspicious nodes with their scores
+
+        NOTE: Here we set the average_time interval through the "scale" variable (=analysis_time/scale)
+        example: if we set a scale of 0.25, the average time will be four times longer than the analysis time
+
+        :param end              : end time for the analysis
+        :param term_to_search   : The data will be aggregated according to this term. Type "MachineAttrMachine0" to aggregate by nodes, type "MachineAttrGLIDEIN_Site0" to aggregate by Sites
+        :param query            : you can pass here a specific query, for example with "MachineAttrMachine0: fnpc17146.fnal.gov" you will get only informations about that specific node
+        :return                 : dictionary of the suspicious nodes with their scores
+        '''
+
+        # Set the interval of time for analysis
+        self.end_time_analysis = end
+        self.start_time_analysis = end - datetime.timedelta(minutes=self.window)
+
+        # Set the interval of time for average
+        self.end_time_average = self.start_time_analysis
+        self.start_time_average = self.end_time_average - datetime.timedelta(minutes=self.window / self.scale)
+
+        # Get data from elasticsearch
+        analysis_dictionary, average_dictionary, global_average = self.get_elasticsearch_data(term_to_search, query)
+
+        # Get suspicious nodes
+        suspicious_nodes_dictionary = self.create_suspicious_nodes_dictionary(analysis_dictionary, global_average)
+
+        # Calculate Scores and Sort the List
+        suspicious_nodes_dictionary = self.calculate_score_suspicious_nodes(suspicious_nodes_dictionary,global_average)
+
+        return suspicious_nodes_dictionary
+
+
+
 def print_suspicious(suspicious_dict, score_threshold=1.0):
+    '''
+    This function prints the list of suspicious nodes sorted by the score
+
+    :param suspicious_dict: dicionary to print of the suspicious nodes
+    :param score_threshold: threshold for the score. default value is 1.0
+    '''
 
     # Creating a list (node,score) just to sort by scores
     suspicious_list = list()
@@ -315,10 +411,12 @@ def main():
             logger.error(f'error while parsing end time, should conform to ISO8601: {e}')
             sys.exit(1)
 
-    print('\n\n ############################################################# BLACKHOLE NODES #############################################################')
+    print('\n\n')
+    print('############################################################# BLACKHOLE NODES #############################################################')
     print_suspicious(b.get_blackholes(end), opts['threshold'])
 
-    print('\n\n\n\n\n\n\n ############################################################# BLACKHOLE SITES #############################################################')
+    print('\n\n\n\n\n\n\n')
+    print('############################################################# BLACKHOLE SITES #############################################################')
     print_suspicious(b.get_blackholes(end, term_to_search="MachineAttrGLIDEIN_Site0", query="NOT MachineAttrGLIDEIN_Site0: FermiGrid"), opts['threshold'])
 
 
