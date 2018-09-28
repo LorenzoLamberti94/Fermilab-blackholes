@@ -111,25 +111,25 @@ class Blackholes(object):
                                             "analyze_wildcard": True
                                         }
                                     },
-                                    "manual": {
+                                    "hold_manual": {
                                         "query_string": {
                                             "query": "HoldReasonCode: 1",
                                             "analyze_wildcard": True
                                         }
                                     },
-                                    "resources": {
+                                    "hold_resources": {
                                         "query_string": {
                                             "query": "HoldReasonCode: (34 26)",
                                             "analyze_wildcard": True
                                         }
                                     },
-                                    "starter": {
+                                    "hold_starter": {
                                         "query_string": {
                                             "query": "HoldReasonCode: 6",
                                             "analyze_wildcard": True
                                         }
                                     },
-                                    "others": {
+                                    "hold_other": {
                                         "query_string": {
                                             "query": "MyType:JobHeldEvent AND (NOT HoldReasonCode: (1 6 26 34) )",
                                             "analyze_wildcard": True
@@ -206,7 +206,7 @@ class Blackholes(object):
                     suspicious_dict[node]['criteria'][aggr] = value_analysis / (average[aggr] + 1)
                     suspicious_dict[node]['score'] += self.weights[aggr] * suspicious_dict[node]['criteria'][aggr]  # Just INCREMENT the score
 
-                if aggr == 'hold_others':
+                if aggr == 'hold_other':
                     suspicious_dict[node]['criteria'][aggr] = value_analysis / (average[aggr] + 1)
                     suspicious_dict[node]['score'] += self.weights[aggr] * suspicious_dict[node]['criteria'][aggr]  # Just INCREMENT the score
 
@@ -244,10 +244,10 @@ def print_suspicious(suspicious_dict, score_threshold=1.0):
                   (elem[0],
                    elem[1],
                    suspicious_dict[elem[0]]['criteria']['fail'],
-                   suspicious_dict[elem[0]]['criteria']['manual'],
-                   suspicious_dict[elem[0]]['criteria']['resources'],
-                   suspicious_dict[elem[0]]['criteria']['others'],
-                   suspicious_dict[elem[0]]['criteria']['starter'],
+                   suspicious_dict[elem[0]]['criteria']['hold_manual'],
+                   suspicious_dict[elem[0]]['criteria']['hold_resources'],
+                   suspicious_dict[elem[0]]['criteria']['hold_other'],
+                   suspicious_dict[elem[0]]['criteria']['hold_starter'],
                    suspicious_dict[elem[0]]['criteria']['disconnections'],
                    suspicious_dict[elem[0]]['criteria']['no_successful_jobs'])
                   )
